@@ -1,0 +1,15 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Streamlit secrets (never commit!)
+.streamlit/secrets.toml
+
+# Keys/JSON (avoid pushing service accounts)
+*.json
