@@ -4,6 +4,15 @@
 # - Robust timestamp parsing (ms/s, dicts/strings)
 # - Dark/Light toggle (CSS) + charts that adapt at runtime
 
+# --- Safety net: ensure firebase-admin is available in Streamlit Cloud ---
+try:
+    import firebase_admin  # noqa: F401
+except ModuleNotFoundError:
+    import subprocess, sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "firebase-admin==6.5.0"])
+    import firebase_admin  # now it exists
+# -------------------------------------------------------------------------
+
 import time
 from datetime import datetime, timezone
 import pandas as pd
