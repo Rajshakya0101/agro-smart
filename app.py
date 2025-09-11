@@ -1,8 +1,9 @@
-# app.py — AgroSmart (ESP8266 + DHT demo) with runtime Dark Mode toggle
+# app.py — AgroSmart (ESP8266 + DHT demo) with runtime Dark Mode + Device Status Pill
 # - Humidity as "moisture_pct", temperature as "temp_c"
 # - Firebase Admin via .streamlit/secrets.toml
 # - Robust timestamp parsing (ms/s, dicts/strings)
 # - Dark/Light toggle (CSS) + charts that adapt at runtime
+# - ONLINE / STALE / OFFLINE indicator based on last_ts
 
 # --- Safety net: ensure firebase-admin is available in Streamlit Cloud ---
 try:
@@ -25,7 +26,7 @@ from firebase_admin import credentials, db
 
 # ----------------------------- Firebase Init -----------------------------
 def init_firebase():
-    """Initialize Firebase Admin using values from st.secrets['firebase']."""
+    """Initialize Firebase Admin using values from st.secrets['firebase'].""" 
     if firebase_admin._apps:
         return
     fb = st.secrets["firebase"]  # will raise nicely if missing
@@ -121,6 +122,34 @@ def write_thresholds(zone_id, start_pct, stop_pct):
     })
 
 
+# --------- Device status pill (ONLINE / STALE / OFFLINE) ----------
+def make_status_pill(last_dt, heartbeat_s=45, stale_s=240):
+    """
+    Return (html, state) where state ∈ {'online','stale','offline'}.
+    - heartbeat_s: expected update interval (ESP sends every ~5–10s → 45s is safe)
+    - stale_s: beyond this, mark as offline
+    """
+    now = datetime.now().astimezone()
+    if not last_dt:
+        return '<span class="pill bad"><span class="dot"></span> OFFLINE</span>', "offline"
+
+    age = (now - last_dt).total_seconds()
+    if age <= heartbeat_s:
+        txt = f"ONLINE · {int(age)}s ago"
+        cls = "ok"; state = "online"
+    elif age <= stale_s:
+        m, s = int(age // 60), int(age % 60)
+        txt = f"STALE · {m}m {s}s ago"
+        cls = "warn"; state = "stale"
+    else:
+        m = int(age // 60)
+        txt = f"OFFLINE · {m}m ago"
+        cls = "bad"; state = "offline"
+
+    html = f'<span class="pill {cls}"><span class="dot"></span> {txt}</span>'
+    return html, state
+
+
 # ----------------------------- Theming (Option B) -----------------------------
 def inject_css(dark_mode: bool):
     """Runtime theming: strong dark + tidy light."""
@@ -136,26 +165,32 @@ def inject_css(dark_mode: bool):
           .stApp{background:var(--bg); color:var(--text);}
           [data-testid="stSidebar"]{background: #0c0f14;}
           h1,h2,h3,h4{color:var(--text) !important; opacity:0.95;}
-          /* cards / containers */
           .stMarkdown, .stVerticalBlock, .stHorizontalBlock{ color:var(--text); }
           hr{border-color:var(--border-strong) !important;}
-          /* metrics */
           [data-testid="stMetricValue"]{color:var(--text) !important;}
           [data-testid="stMetricLabel"]{color:var(--muted) !important;}
-          /* buttons */
           .stButton>button{
             background: var(--panel) !important; color: var(--text) !important;
             border:1px solid var(--border) !important; border-radius:10px !important;
           }
           .stButton>button:hover{ border-color: var(--accent) !important; color: var(--accent) !important;}
-          /* inputs (number/select/text) */
           .stNumberInput input, .stTextInput input, .stSelectbox [role="combobox"]{
             background: var(--panel) !important; color: var(--text) !important;
             border:1px solid var(--border) !important; border-radius:10px !important;
           }
           .stNumberInput button[kind="plain"]{ color:var(--text) !important; }
-          /* alerts */
           .stAlert{ border-radius:10px !important; }
+
+          /* status pill */
+          .pill{
+            display:inline-flex; align-items:center; gap:8px;
+            padding:6px 10px; border-radius:999px;
+            font-weight:600; font-size:.9rem; border:1px solid var(--border);
+          }
+          .pill .dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block;}
+          .pill.ok   { background: rgba(34,197,94,.12);  color:#22c55e; border-color: rgba(34,197,94,.35); }
+          .pill.warn { background: rgba(245,158,11,.12); color:#f59e0b; border-color: rgba(245,158,11,.35); }
+          .pill.bad  { background: rgba(239,68,68,.12);  color:#ef4444; border-color: rgba(239,68,68,.35); }
         </style>
         """, unsafe_allow_html=True)
     else:
@@ -178,6 +213,17 @@ def inject_css(dark_mode: bool):
             background:#ffffff !important; color:#111827 !important;
             border:1px solid var(--border) !important; border-radius:10px !important;
           }
+
+          /* status pill */
+          .pill{
+            display:inline-flex; align-items:center; gap:8px;
+            padding:6px 10px; border-radius:999px;
+            font-weight:600; font-size:.9rem; border:1px solid var(--border);
+          }
+          .pill .dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block;}
+          .pill.ok   { background: rgba(34,197,94,.12);  color:#16a34a; border-color: rgba(34,197,94,.35); }
+          .pill.warn { background: rgba(245,158,11,.12); color:#b45309; border-color: rgba(245,158,11,.35); }
+          .pill.bad  { background: rgba(239,68,68,.12);  color:#b91c1c; border-color: rgba(239,68,68,.35); }
         </style>
         """, unsafe_allow_html=True)
 
@@ -201,7 +247,6 @@ def theme_chart(chart: alt.Chart, dark_mode: bool) -> alt.Chart:
     )
 
 
-
 # ----------------------------- UI -----------------------------
 st.set_page_config(page_title="AgroSmart", page_icon="🌱", layout="wide")
 st.title("🌱 AgroSmart — Smart Irrigation (Jorethang)")
@@ -217,7 +262,6 @@ inject_css(dark)
 zone_id = st.sidebar.selectbox("Select Zone", ["Z1"], index=0)
 auto_refresh = st.sidebar.checkbox("Auto-refresh (5s)", value=True)
 if auto_refresh:
-    # Modern API; update URL params for shareable state/cache-busting
     try:
         st.query_params.update({"refresh": str(int(time.time()))})
     except Exception:
@@ -237,13 +281,22 @@ with colA:
     last_dt = ts_to_dt(last_ts)
     last_seen = last_dt.strftime("%Y-%m-%d %H:%M:%S") if last_dt else "—"
 
+    # KPIs
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Humidity / Moisture (%)", f"{moisture_pct if moisture_pct is not None else '—'}")
     k2.metric("Air Temp (°C)", f"{temp_c if temp_c is not None else '—'}")
     k3.metric("Valve (simulated)", valve_state)
     k4.metric("Mode", command)
-    st.caption(f"Last seen: {last_seen}")
 
+    # Last seen + Online status pill
+    pill_html, _status = make_status_pill(last_dt, heartbeat_s=45, stale_s=240)
+    c_left, c_right = st.columns([1, 1])
+    with c_left:
+        st.caption(f"Last seen: {last_seen}")
+    with c_right:
+        st.markdown(f'<div style="text-align:right">{pill_html}</div>', unsafe_allow_html=True)
+
+    # Charts
     df = pull_logs(zone_id, limit=300)
     if not df.empty:
         mo_chart = alt.Chart(df).mark_line().encode(
